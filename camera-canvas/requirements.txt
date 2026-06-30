@@ -1,0 +1,10 @@
+# Resolve to the latest stable versions with Apple-Silicon / MPS support.
+torch
+torchvision
+opencv-python
+pygame
+numpy
+pillow
+pyyaml
+imageio
+imageio-ffmpeg

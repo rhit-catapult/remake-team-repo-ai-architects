@@ -65,6 +65,7 @@ class AppState:
         self.style_id = self.ids[self.idx]
 
         self.side_by_side = False
+        self.trails_on = config.get("paint_trails", True)
         self.fullscreen = config.get("start_fullscreen", False)
         self.window_w = config["window_width"]
         self.window_h = config["window_height"]
@@ -138,7 +139,7 @@ def run_live_screen(screen, state, raw_slot, recorder, capture, config, registry
                               display_size=(config["display_height"], config["display_width"]))
             ui.draw()
             if recorder.recording:
-                styled = out_slot.get()
+                styled = ui.composited()
                 if styled is not None:
                     recorder.write(styled)
             clock.tick(60)
@@ -181,7 +182,7 @@ def main():
     state = AppState(registry, adain, config, device, preset_styles)
 
     pygame.init()
-    pygame.display.set_caption("Neural Style Transfer - Webcam")
+    pygame.display.set_caption("Camera Canvas - Neural Style Transfer")
     if state.fullscreen:
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     else:
@@ -199,7 +200,8 @@ def main():
             screen = pygame.display.get_surface()
             if action == "home":
                 action = HomeScreen(screen, capture, raw_slot, state.device_name,
-                                    len(state.ids)).run()
+                                    len(state.ids),
+                                    reduce_motion=state.reduce_motion).run()
             elif action == "live":
                 action = run_live_screen(screen, state, raw_slot, recorder, capture,
                                          config, registry, device)

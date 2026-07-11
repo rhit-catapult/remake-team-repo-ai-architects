@@ -13,6 +13,10 @@ start_fullscreen: true
 
 reduce_motion: false
 
+# Motion paint trails: wave at the camera to leave glowing paint streaks
+# on the Live screen. T toggles, C clears the canvas.
+paint_trails: true
+
 use_half: false
 
 benchmark_frames: 60

@@ -8,23 +8,29 @@ import numpy as np
 import pygame
 
 from app.dialogs import open_file_dialog
+from app.trails import MotionTrails
 
-BG = (16, 18, 24)
-BAR_BG = (24, 27, 36)
-BORDER = (44, 48, 62)
-TEXT = (235, 237, 242)
-TEXT_DIM = (140, 146, 162)
-ACCENT = (96, 165, 250)
+# Playful art-studio palette: warm plum darks, vivid candy accents.
+BG = (26, 20, 32)
+BAR_BG = (36, 27, 45)
+BORDER = (70, 54, 84)
+TEXT = (246, 240, 249)
+TEXT_DIM = (168, 152, 182)
+ACCENT = (255, 122, 89)          # coral
 GOOD = (74, 222, 128)
-WARN = (251, 146, 60)
+WARN = (251, 191, 60)
 REC = (248, 113, 113)
-SLIDER_TRACK = (52, 56, 72)
-DARK_ON_LIGHT = (18, 19, 26)
+SLIDER_TRACK = (60, 47, 74)
+DARK_ON_LIGHT = (24, 17, 28)
+
+# The studio rainbow — used for playful accents across all screens.
+PALETTE = [(255, 122, 89), (255, 199, 89), (94, 226, 160),
+           (86, 192, 255), (196, 148, 255)]
 
 CATEGORY_COLOR = {
-    "filter": (96, 165, 250),
-    "neural": (167, 139, 250),
-    "arbitrary": (52, 211, 153),
+    "filter": (86, 192, 255),
+    "neural": (196, 148, 255),
+    "arbitrary": (94, 226, 160),
 }
 
 BAR_H = 136
@@ -32,6 +38,8 @@ TOP_ACCENT_H = 3
 SWITCH_FLASH_S = 0.22
 SHOT_FLASH_S = 0.16
 SHOT_TOAST_S = 1.1
+SPLASH_S = 1.0
+HINT_S = 4.5
 
 
 def _ease_out_cubic(t):
@@ -43,6 +51,10 @@ def bgr_to_surface(frame_bgr):
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     return pygame.image.frombuffer(np.ascontiguousarray(rgb).tobytes(),
                                    (rgb.shape[1], rgb.shape[0]), "RGB")
+
+
+def _bgr_to_rgb(bgr):
+    return (bgr[2], bgr[1], bgr[0])
 
 
 def update_cursor(clickable_rects, mouse_pos):
@@ -70,6 +82,7 @@ class UI:
         self.fonts = {
             "hero": pygame.font.SysFont("menlo,monaco,monospace", 40, bold=True),
             "hero_sm": pygame.font.SysFont("menlo,monaco,monospace", 26, bold=True),
+            "splash": pygame.font.SysFont("helveticaneue,arial", 72, bold=True),
             "big": pygame.font.SysFont("helveticaneue,arial", 28, bold=True),
             "h": pygame.font.SysFont("helveticaneue,arial", 18, bold=True),
             "body": pygame.font.SysFont("helveticaneue,arial", 16),
@@ -80,11 +93,20 @@ class UI:
         self.want_back = False
         self.want_benchmark = False
         self._button_rects = {}
+        self._hover_t = {}
+        self._last_draw_t = time.time()
+
+        self.trails = MotionTrails(enabled=getattr(state, "trails_on", True))
 
         self._last_style_id = None
         self._switch_flash_t = -10.0
         self._shot_flash_t = -10.0
         self._shot_toast_until = 0.0
+
+        self._splash_text = None
+        self._splash_color = TEXT
+        self._splash_t0 = -10.0
+        self._hint_until = (time.time() + HINT_S) if self.trails.enabled else 0.0
 
     @property
     def reduce_motion(self):
@@ -135,8 +157,25 @@ class UI:
             s.next_preset()
         elif k == pygame.K_f:
             self._toggle_fullscreen()
+        elif k == pygame.K_t:
+            self._toggle_trails()
+        elif k == pygame.K_c:
+            self.trails.clear()
         elif k == pygame.K_b:
             self.want_benchmark = True
+
+    def _toggle_trails(self):
+        on = self.trails.toggle()
+        self.state.trails_on = on
+        color = _bgr_to_rgb(self.trails.current_color()) if on else TEXT_DIM
+        self._splash("PAINT ON" if on else "PAINT OFF", color)
+        if on:
+            self._hint_until = time.time() + HINT_S
+
+    def _splash(self, text, color=TEXT):
+        self._splash_text = text
+        self._splash_color = color
+        self._splash_t0 = time.time()
 
     def _on_click(self, pos):
         for name, rect in self._button_rects.items():
@@ -145,6 +184,10 @@ class UI:
                     self._screenshot()
                 elif name == "rec":
                     self._toggle_record()
+                elif name == "paint":
+                    self._toggle_trails()
+                elif name == "clear":
+                    self.trails.clear()
                 elif name == "thumb":
                     self.state.next_preset()
                 elif name == "sbs":
@@ -156,8 +199,15 @@ class UI:
                         entry.processor.set_strength(max(0.0, min(1.0, val)))
                 return
 
-    def _screenshot(self):
+    def composited(self):
+        """Latest styled frame with paint trails baked in (or None)."""
         styled = self.out_slot.get()
+        if styled is None:
+            return None
+        return self.trails.composite(styled)
+
+    def _screenshot(self):
+        styled = self.composited()
         if styled is not None:
             self.recorder.screenshot(styled)
             now = time.time()
@@ -166,7 +216,7 @@ class UI:
                 self._shot_flash_t = now
 
     def _toggle_record(self):
-        styled = self.out_slot.get()
+        styled = self.composited()
         if styled is not None:
             self.recorder.toggle_recording(max(1.0, self.display_fps.value()), styled)
 
@@ -179,18 +229,27 @@ class UI:
     def draw(self):
         self.display_fps.tick()
         now = time.time()
+        dt = min(0.1, now - self._last_draw_t)
+        self._last_draw_t = now
 
         if self.state.style_id != self._last_style_id:
-            if self._last_style_id is not None and not self.reduce_motion:
-                self._switch_flash_t = now
+            if self._last_style_id is not None:
+                entry = self.state.entry()
+                self._splash(entry.name.upper(),
+                             CATEGORY_COLOR.get(entry.category, ACCENT))
+                if not self.reduce_motion:
+                    self._switch_flash_t = now
             self._last_style_id = self.state.style_id
 
         self.screen.fill(BG)
         w, h = self.screen.get_size()
         view = pygame.Rect(0, 0, w, h - BAR_H)
 
-        styled = self.out_slot.get()
         raw = self.raw_slot.get()
+        self.trails.update(raw)
+        styled = self.out_slot.get()
+        if styled is not None:
+            styled = self.trails.composite(styled)
 
         if styled is None:
             self._draw_camera_message(view)
@@ -205,13 +264,59 @@ class UI:
         else:
             self._blit_fit(styled, view)
 
-        self._draw_bottom_bar(pygame.Rect(0, h - BAR_H, w, BAR_H), now)
+        self._draw_splash(now, view)
+        self._draw_hint(now, view)
+        self._draw_bottom_bar(pygame.Rect(0, h - BAR_H, w, BAR_H), now, dt)
 
         if not self.reduce_motion:
             self._draw_shot_flash(now, w, h)
 
         update_cursor(self._button_rects.values(), pygame.mouse.get_pos())
         pygame.display.flip()
+
+    def _draw_splash(self, now, view):
+        """Big style-name / paint-toggle announcement, sliding up and fading."""
+        if not self._splash_text:
+            return
+        elapsed = now - self._splash_t0
+        if elapsed >= SPLASH_S:
+            return
+        if self.reduce_motion:
+            alpha, dy = (255, 0) if elapsed < SPLASH_S * 0.8 else (0, 0)
+        else:
+            fade_in = _ease_out_cubic(elapsed / 0.15)
+            fade_out = 1 - _ease_out_cubic(max(0.0, elapsed - 0.55) / (SPLASH_S - 0.55))
+            alpha = int(255 * max(0.0, min(fade_in, fade_out)))
+            dy = int((1 - fade_in) * 46)
+        if alpha <= 0:
+            return
+        label = self.fonts["splash"].render(self._splash_text, True, self._splash_color)
+        pad_x, pad_y = 36, 14
+        pill = pygame.Surface((label.get_width() + pad_x * 2,
+                               label.get_height() + pad_y * 2), pygame.SRCALPHA)
+        pygame.draw.rect(pill, (10, 6, 14, int(170 * alpha / 255)),
+                         pill.get_rect(), border_radius=26)
+        label.set_alpha(alpha)
+        px = view.centerx - pill.get_width() // 2
+        py = view.centery - pill.get_height() // 2 + dy
+        self.screen.blit(pill, (px, py))
+        self.screen.blit(label, (px + pad_x, py + pad_y))
+
+    def _draw_hint(self, now, view):
+        """First-visit nudge: tell people the canvas is paintable."""
+        if now >= self._hint_until or not self.trails.enabled:
+            return
+        text = "Wave your hands to paint!   ·   T toggle   ·   C clear"
+        surf = self.fonts["h"].render(text, True, TEXT)
+        pad = 12
+        bg = pygame.Surface((surf.get_width() + pad * 2, surf.get_height() + pad),
+                            pygame.SRCALPHA)
+        pygame.draw.rect(bg, (10, 6, 14, 160), bg.get_rect(), border_radius=12)
+        bob = 0 if self.reduce_motion else int(math.sin(now * 3.0) * 4)
+        x = view.centerx - bg.get_width() // 2
+        y = view.y + 28 + bob
+        self.screen.blit(bg, (x, y))
+        self.screen.blit(surf, (x + pad, y + pad // 2))
 
     def _blit_fit(self, frame_bgr, rect):
         fh, fw = frame_bgr.shape[:2]
@@ -250,8 +355,10 @@ class UI:
         overlay.fill((255, 255, 255, alpha))
         self.screen.blit(overlay, (0, 0))
 
-    def _draw_bottom_bar(self, bar, now):
+    def _draw_bottom_bar(self, bar, now, dt):
         self._button_rects = {}
+        self._dt = dt
+        self._mouse = pygame.mouse.get_pos()
         pygame.draw.rect(self.screen, BAR_BG, bar)
 
         entry = self.state.entry()
@@ -278,6 +385,7 @@ class UI:
         x = bar.x + pad
         right_x = bar.right - pad
         btn_w = 116
+        btns_w = btn_w * 2 + 10          # two columns: Paint/Clear + Record/Shot
         name_w = 230
         gap = 24
 
@@ -289,7 +397,7 @@ class UI:
         thumb_zone_w = (96 + gap) if has_thumb_asset else 0
 
         MIN_HERO_W = 170
-        available = (right_x - btn_w - gap) - (x + name_w) - MIN_HERO_W
+        available = (right_x - btns_w - gap) - (x + name_w) - MIN_HERO_W
         show_slider = available >= slider_zone_w
         if show_slider:
             available -= slider_zone_w
@@ -320,7 +428,9 @@ class UI:
             self._text("[ / ]", (cursor, row_y + 58), "small", TEXT_DIM)
             cursor += res_zone_w
 
-        buttons_x = right_x - btn_w
+        col2_x = right_x - btn_w          # Record / Screenshot
+        col1_x = col2_x - 10 - btn_w      # Paint / Clear
+        buttons_x = col1_x
         cursor_right = buttons_x
 
         thumb_x = None
@@ -341,9 +451,19 @@ class UI:
             pygame.draw.rect(self.screen, BORDER, thumb_rect, 1)
             self._button_rects["thumb"] = thumb_rect
 
-        self._draw_record_button(pygame.Rect(buttons_x, row_y + 8, btn_w, 40), now)
-        shot_rect = pygame.Rect(buttons_x, row_y + 52, btn_w, 40)
-        self._draw_button(shot_rect, "Screenshot (S)", None)
+        paint_rect = pygame.Rect(col1_x, row_y + 8, btn_w, 40)
+        paint_fill = _bgr_to_rgb(self.trails.current_color()) if self.trails.enabled else None
+        self._draw_button(paint_rect, "Paint (T)", paint_fill, name="paint")
+        self._button_rects["paint"] = paint_rect
+
+        clear_rect = pygame.Rect(col1_x, row_y + 52, btn_w, 40)
+        self._draw_button(clear_rect, "Clear (C)", None, name="clear",
+                          dim=not self.trails.enabled)
+        self._button_rects["clear"] = clear_rect
+
+        self._draw_record_button(pygame.Rect(col2_x, row_y + 8, btn_w, 40), now)
+        shot_rect = pygame.Rect(col2_x, row_y + 52, btn_w, 40)
+        self._draw_button(shot_rect, "Screenshot (S)", None, name="shot")
         self._button_rects["shot"] = shot_rect
 
         if now < self._shot_toast_until:
@@ -401,7 +521,7 @@ class UI:
         else:
             fill = REC if recording else None
         label = "● REC" if recording else "Record (R)"
-        self._draw_button(rect, label, fill)
+        self._draw_button(rect, label, fill, name="rec")
         self._button_rects["rec"] = rect
 
     def _draw_slider(self, x, y, w, entry):
@@ -419,10 +539,31 @@ class UI:
         else:
             self._text("n/a", (x + w + 10, y), "small", TEXT_DIM)
 
-    def _draw_button(self, rect, label, fill):
-        pygame.draw.rect(self.screen, fill or (40, 44, 58), rect, border_radius=8)
-        pygame.draw.rect(self.screen, BORDER, rect, 1, border_radius=8)
-        text_color = DARK_ON_LIGHT if fill is not None else TEXT
+    def _hover_amount(self, name, rect):
+        """Eased 0..1 hover progress for a named button."""
+        target = 1.0 if rect.collidepoint(getattr(self, "_mouse", (-1, -1))) else 0.0
+        cur = self._hover_t.get(name, 0.0)
+        dt = getattr(self, "_dt", 1 / 60)
+        if self.reduce_motion:
+            cur = target
+        else:
+            cur += (target - cur) * min(1.0, 14.0 * dt)
+        self._hover_t[name] = cur
+        return cur
+
+    def _draw_button(self, rect, label, fill, name=None, dim=False):
+        hov = self._hover_amount(name, rect) if name else 0.0
+        base = (52, 41, 63)
+        if fill is not None:
+            bg = tuple(min(255, int(c + (255 - c) * 0.18 * hov)) for c in fill)
+        else:
+            bg = tuple(int(c + (78 - c) * hov * 0.9) for c in base)
+        if dim:
+            bg = (40, 32, 49)
+        pygame.draw.rect(self.screen, bg, rect, border_radius=10)
+        border = tuple(int(b + (t - b) * hov * 0.7) for b, t in zip(BORDER, TEXT_DIM))
+        pygame.draw.rect(self.screen, border, rect, 1, border_radius=10)
+        text_color = DARK_ON_LIGHT if fill is not None else (TEXT_DIM if dim else TEXT)
         surf = self.fonts["small"].render(label, True, text_color)
         self.screen.blit(surf, (rect.centerx - surf.get_width() // 2,
                                 rect.centery - surf.get_height() // 2))

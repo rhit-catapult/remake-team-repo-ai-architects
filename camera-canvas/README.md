@@ -1,4 +1,4 @@
-# Real-Time Neural Style Transfer Webcam
+# Camera Canvas — Real-Time Neural Style Transfer Webcam
 
 A desktop app that re-renders your webcam feed — live or from a still photo —
 in different visual styles: painterly neural styles (Candy / Mosaic / Rain
@@ -7,6 +7,11 @@ a Starry Night for "Van Gogh mode"), and seven CV filters (Sketch / Pixel /
 Cartoon / Oil Painting / Crayon / Watercolor / Charcoal). Switch styles live,
 tweak strength, screenshot, and record — or capture/upload a single photo and
 generate full-quality artwork from it.
+
+**Motion paint trails** make the Live screen a playground: wave your hands
+and you leave glowing streaks of paint on the canvas, in a color that drifts
+through the rainbow. The paint bleeds and fades like wet ink, and it's baked
+into screenshots and recordings. `T` toggles, `C` wipes the canvas.
 
 This is **neural style transfer**, not a deepfake — no face swapping or
 identity synthesis.
@@ -70,6 +75,8 @@ precision clicking):
 | `R` | toggle recording (mp4 → outputs/) |
 | `O` | open style-image picker (AdaIN) |
 | `P` | cycle preset style images (AdaIN) |
+| `T` | toggle motion paint trails |
+| `C` | clear the paint canvas |
 | `F` | toggle fullscreen |
 | `B` | run a benchmark sweep |
 | `Esc` | back to Home |
@@ -134,6 +141,20 @@ whatever the user expects to see. The fix is a job-id counter: every new
 source photo bumps the id and resets `busy` immediately; the background
 thread checks its captured id against the current one before writing its
 result, so a stale job's output is discarded rather than displayed.
+
+### Motion paint trails
+
+The Live screen's party trick lives in `app/trails.py`. Consecutive raw
+camera frames are downscaled to 320px, grayscaled, and differenced; pixels
+that changed more than a threshold form a motion mask, which deposits paint
+onto a low-resolution float canvas in a hue that drifts through the rainbow
+over time. Every camera frame the canvas fades a little and is blurred a
+little, so streaks bleed outward and dissolve like wet ink. At draw time the
+canvas is upscaled and additively blended over the styled frame, so trails
+bloom over whatever style is active. All the heavy work happens at the 320px
+working resolution, keeping the whole effect under a millisecond per frame —
+it never competes with inference for time. Screenshots and recordings use
+the composited frame, so demo visitors take their paintings home.
 
 ### Style registry
 
@@ -229,6 +250,7 @@ config.yaml                     camera, resolution, window, and behavior setting
 app/
   capture.py                    threaded webcam capture -> LatestSlot
   pipeline.py                   LatestSlot, FPS counters, inference worker, warm-up
+  trails.py                     motion paint trails (frame differencing -> paint canvas)
   dialogs.py                    shared native file-picker (tkinter)
   ui.py                         Live screen: rendering, HUD, input
   ui_home.py                    Home screen: mode picker
@@ -260,6 +282,7 @@ weights/  styles/  outputs/       gitignored: downloaded weights, style images, 
 | `default_resolution` | Which of `resolutions` is active at startup. |
 | `window_width`, `window_height` | Window size when not fullscreen. |
 | `start_fullscreen` | Open in fullscreen immediately; `F` toggles at any time. |
+| `paint_trails` | Start the Live screen with motion paint trails on; `T` toggles, `C` clears. |
 | `reduce_motion` | Replace flashes/pulses with instant/static equivalents. |
 | `use_half` | Try float16 on MPS for the neural nets (falls back to fp32 automatically if unsupported). |
 | `benchmark_frames` | Frames timed per resolution/style in `--benchmark` mode. |

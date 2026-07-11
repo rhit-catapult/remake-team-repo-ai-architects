@@ -435,3 +435,10 @@ tags
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,vim,python,pycharm,vscode
 n
+
+# --- camera-canvas (Neural Style Transfer Webcam) ---
+camera-canvas/weights/
+camera-canvas/outputs/
+
+# --- editor (machine-specific; never commit) ---
+.vscode/

@@ -9,7 +9,8 @@ import cv2
 import pygame
 
 from app.ui import (BG, BAR_BG, BORDER, TEXT, TEXT_DIM, ACCENT, GOOD, WARN,
-                    DARK_ON_LIGHT, CATEGORY_COLOR, bgr_to_surface, update_cursor)
+                    DARK_ON_LIGHT, CATEGORY_COLOR, PALETTE, bgr_to_surface,
+                    update_cursor, _ease_out_cubic)
 from app.dialogs import open_file_dialog
 from app.pipeline import cap_long_edge
 
@@ -45,6 +46,9 @@ class SnapshotScreen:
         self.want_quit = False
         self.want_back = False
         self._button_rects = {}
+        self._hover_t = {}
+        self._t0 = time.time()
+        self._last_t = self._t0
 
     def entry(self):
         return self.registry[self.ids[self.style_idx]]
@@ -52,6 +56,7 @@ class SnapshotScreen:
     def run(self):
         """Blocking loop until back/quit. Returns 'home' or 'quit'."""
         clock = pygame.time.Clock()
+        self._t0 = time.time()
         while not self.want_quit and not self.want_back:
             for event in pygame.event.get():
                 self._handle_event(event)
@@ -169,6 +174,11 @@ class SnapshotScreen:
             return
 
     def draw(self):
+        now = time.time()
+        self._dt = min(0.1, now - self._last_t)
+        self._last_t = now
+        self._mouse = pygame.mouse.get_pos()
+
         self.screen.fill(BG)
         w, h = self.screen.get_size()
         view = pygame.Rect(0, HEADER_H, w, h - HEADER_H - BAR_H)
@@ -176,11 +186,27 @@ class SnapshotScreen:
         self._draw_header(pygame.Rect(0, 0, w, HEADER_H))
         self._draw_main(view)
         self._draw_bottom_bar(pygame.Rect(0, h - BAR_H, w, BAR_H))
+        self._draw_fade_in(now, w, h)
         update_cursor(self._button_rects.values(), pygame.mouse.get_pos())
+
+    def _draw_fade_in(self, now, w, h):
+        elapsed = now - self._t0
+        if elapsed >= 0.35:
+            return
+        alpha = int(255 * (1 - _ease_out_cubic(elapsed / 0.35)))
+        if alpha <= 0:
+            return
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((*BG, alpha))
+        self.screen.blit(overlay, (0, 0))
 
     def _draw_header(self, rect):
         pygame.draw.rect(self.screen, BAR_BG, rect)
-        pygame.draw.line(self.screen, BORDER, (0, rect.bottom - 1), (rect.right, rect.bottom - 1))
+        # Rainbow paint stripe along the header's bottom edge.
+        seg_w = rect.w / len(PALETTE)
+        for i, col in enumerate(PALETTE):
+            pygame.draw.rect(self.screen, col,
+                             (int(i * seg_w), rect.bottom - 3, int(seg_w) + 1, 3))
         title = self.fonts["h1"].render("Create from Photo", True, TEXT)
         self.screen.blit(title, (24, rect.centery - title.get_height() // 2))
         hint = self.fonts["small"].render("Esc: back to home", True, TEXT_DIM)
@@ -208,7 +234,8 @@ class SnapshotScreen:
                 self._draw_busy_overlay(inner)
 
     def _draw_empty_state(self, rect):
-        self._draw_dashed_rect(rect, BORDER, 10, 8)
+        phase = (time.time() * 22) % 18   # marching-ants drift
+        self._draw_dashed_rect(rect, BORDER, 10, 8, phase)
         cam_ok = self.capture.connected
         cam_line = "Press C to capture from the camera" if cam_ok else "Camera not connected - use Upload instead"
         lines = [("No photo yet", "h1", TEXT),
@@ -222,17 +249,23 @@ class SnapshotScreen:
             err = self.fonts["small"].render(self.error, True, WARN)
             self.screen.blit(err, (rect.centerx - err.get_width() // 2, cy + 3 * 34 + 10))
 
-    def _draw_dashed_rect(self, rect, color, dash, gap):
+    def _draw_dashed_rect(self, rect, color, dash, gap, phase=0.0):
         x, y, w, h = rect
         for edge_y in (y, y + h - 2):
-            xx = x
+            xx = x - (dash + gap) + phase
             while xx < x + w:
-                pygame.draw.line(self.screen, color, (xx, edge_y), (min(xx + dash, x + w), edge_y), 2)
+                x1 = max(x, xx)
+                x2 = min(xx + dash, x + w)
+                if x2 > x1:
+                    pygame.draw.line(self.screen, color, (x1, edge_y), (x2, edge_y), 2)
                 xx += dash + gap
         for edge_x in (x, x + w - 2):
-            yy = y
+            yy = y - (dash + gap) + phase
             while yy < y + h:
-                pygame.draw.line(self.screen, color, (edge_x, yy), (edge_x, min(yy + dash, y + h)), 2)
+                y1 = max(y, yy)
+                y2 = min(yy + dash, y + h)
+                if y2 > y1:
+                    pygame.draw.line(self.screen, color, (edge_x, y1), (edge_x, y2), 2)
                 yy += dash + gap
 
     def _draw_busy_overlay(self, rect):
@@ -297,7 +330,7 @@ class SnapshotScreen:
         for key, label, accent, disabled in reversed(actions):
             bx -= btn_w
             rect = pygame.Rect(bx, bar.centery - btn_h // 2, btn_w, btn_h)
-            self._draw_button(rect, label, None if disabled else accent, disabled)
+            self._draw_button(rect, label, None if disabled else accent, disabled, key)
             self._button_rects[key] = rect
             bx -= gap
 
@@ -309,10 +342,24 @@ class SnapshotScreen:
             err = self.fonts["small"].render(self.error, True, WARN)
             self.screen.blit(err, (x, bar.bottom - 22))
 
-    def _draw_button(self, rect, label, fill, disabled):
-        bg = fill if fill is not None else (40, 44, 58) if not disabled else (26, 28, 38)
-        pygame.draw.rect(self.screen, bg, rect, border_radius=8)
-        pygame.draw.rect(self.screen, BORDER, rect, 1, border_radius=8)
+    def _draw_button(self, rect, label, fill, disabled, name=None):
+        hov = 0.0
+        if name and not disabled:
+            target = 1.0 if rect.collidepoint(getattr(self, "_mouse", (-1, -1))) else 0.0
+            cur = self._hover_t.get(name, 0.0)
+            cur += (target - cur) * min(1.0, 14.0 * getattr(self, "_dt", 1 / 60))
+            self._hover_t[name] = hov = cur
+
+        if disabled:
+            bg = (34, 26, 42)
+        elif fill is not None:
+            bg = tuple(min(255, int(c + (255 - c) * 0.18 * hov)) for c in fill)
+        else:
+            base = (52, 41, 63)
+            bg = tuple(int(c + (78 - c) * hov * 0.9) for c in base)
+        pygame.draw.rect(self.screen, bg, rect, border_radius=10)
+        border = tuple(int(b + (t - b) * hov * 0.7) for b, t in zip(BORDER, TEXT_DIM))
+        pygame.draw.rect(self.screen, border, rect, 1, border_radius=10)
         text_color = DARK_ON_LIGHT if fill is not None else (TEXT_DIM if disabled else TEXT)
         surf = self.fonts["small"].render(label, True, text_color)
         self.screen.blit(surf, (rect.centerx - surf.get_width() // 2,
